@@ -112,6 +112,14 @@ b{font-weight:400}
 .stile .bs{margin-top:auto;font-size:var(--fs);color:var(--amber);display:flex;flex-direction:column;gap:2px}
 .stile .bs .top{color:var(--g2);font-weight:400}
 .menu-actions{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.mode-row{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%}
+.mode-tabs{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+.mode-tabs .tab{font-size:var(--fm);min-width:8.5em;padding:10px 20px}
+.mode-tabs .tab.easy.sel{--bgc:var(--amber);--bc:#fff0b0}
+.mode-note{margin:0;font-size:var(--fs);color:var(--g2);text-align:center;line-height:1.5}
+.mode-note b{color:var(--amber)}
+.stage-grid.easy{grid-template-columns:repeat(2,1fr);max-width:760px}
+@media (max-width:460px){.stage-grid.easy{grid-template-columns:1fr}}
 .credit{margin:0;color:var(--g3);font-size:var(--fs);text-align:center}
 
 /* 스테이지 소개 */
@@ -426,6 +434,13 @@ b{font-weight:400}
       <input id="nameInput" type="text" maxlength="8" placeholder="여기에 이름을 적어요" autocomplete="off" list="nameList" enterkeyhint="done">
       <datalist id="nameList"></datalist>
       <p class="note" id="nameNote">이름을 입력하면 스테이지별 최고 점수가 이 기기에 저장돼요.</p>
+    </div>
+    <div class="mode-row">
+      <div class="mode-tabs" id="modeTabs" role="group" aria-label="난이도 고르기">
+        <button class="tab" data-mode="normal" aria-pressed="true">일반 모드</button>
+        <button class="tab easy" data-mode="easy" aria-pressed="false">이지 모드</button>
+      </div>
+      <p class="mode-note" id="modeNote"></p>
     </div>
     <div class="stage-grid" id="stageGrid"></div>
     <div class="menu-actions">
@@ -802,7 +817,7 @@ const Sound = {
    기록 저장 (이 기기의 localStorage)
    ========================================================= */
 const Store = {
-  d: { players: [], lastName: '', sound: true, music: true },
+  d: { players: [], lastName: '', sound: true, music: true, easy: false },
   load() {
     try {
       const v = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
@@ -811,27 +826,33 @@ const Store = {
         this.d.lastName = typeof v.lastName === 'string' ? v.lastName : '';
         this.d.sound = v.sound !== false;
         this.d.music = v.music !== false;
+        this.d.easy = v.easy === true;
       }
     } catch (e) { /* 저장소를 쓸 수 없으면 이번 실행 동안만 기억 */ }
   },
   save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(this.d)); } catch (e) { /* 무시 */ } },
   player(name, create) {
     let p = this.d.players.find((x) => x.name === name);
-    if (!p && create) { p = { name, best: [0, 0, 0, 0, 0, 0], plays: 0 }; this.d.players.push(p); }
+    if (!p && create) { p = { name, best: [0, 0, 0, 0, 0, 0], easy: [0, 0], plays: 0 }; this.d.players.push(p); }
     return p;
   },
-  record(name, st, score) {
-    const p = this.player(name, true);
-    const prev = p.best[st] || 0;
+  scores(p, easy) { // 일반 모드는 p.best, 이지 모드는 p.easy
+    if (easy && !Array.isArray(p.easy)) p.easy = [];
+    return easy ? p.easy : p.best;
+  },
+  record(name, st, score, easy) {
+    const p = this.player(name, true), arr = this.scores(p, easy);
+    const prev = arr[st] || 0;
     p.plays = (p.plays || 0) + 1;
-    if (score > prev) p.best[st] = score;
+    if (score > prev) arr[st] = score;
     this.save();
     return { isNew: score > prev && score > 0, prev };
   },
-  best(name, st) { const p = name && this.player(name); return p ? p.best[st] || 0 : 0; },
-  ranking(st) { // st: 0~5 스테이지, 6 합계
+  best(name, st, easy) { const p = name && this.player(name); return p ? this.scores(p, easy)[st] || 0 : 0; },
+  ranking(st, easy) { // st: 스테이지 번호, 스테이지 개수와 같으면 합계
+    const total = st === stageList(easy).length;
     const rows = this.d.players
-      .map((p) => ({ name: p.name, score: st === 6 ? p.best.reduce((a, b) => a + (b || 0), 0) : p.best[st] || 0 }))
+      .map((p) => { const a = this.scores(p, easy); return { name: p.name, score: total ? a.reduce((x, y) => x + (y || 0), 0) : a[st] || 0 }; })
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, 'ko'));
     let rank = 0, prev = null;
@@ -916,9 +937,10 @@ const STAGES = [
       '켜진 카드의 숫자를 모두 더해서 목표 숫자를 만든 다음 <b>확인</b>을 눌러요.',
       '켜진 카드는 1, 꺼진 카드는 0! 이것이 바로 2진수예요.'],
     ex: '목표 <b>13</b> ▶ <span class="lit">8</span> + <span class="lit">4</span> + <span class="lit">1</span> ▶ 2진수 <b>1101</b>',
+    bits: [4, 6, 8], // 레벨별 카드 장수 (이지 모드는 아래 EASY_STAGES에서 바꿈)
     gen(lv) {
-      const n = [4, 6, 8][lv];
-      const lo = lv === 0 || Math.random() < 0.25 ? 1 : 2 ** [4, 6][lv - 1];
+      const n = this.bits[lv];
+      const lo = lv === 0 || Math.random() < 0.25 ? 1 : 2 ** this.bits[lv - 1];
       const target = R(lo, 2 ** n - 1);
       return { key: target, target, n, cards: Array(n).fill(false) };
     },
@@ -952,8 +974,9 @@ const STAGES = [
     how: ['화면에 나온 <b>2진수</b>를 <b>10진수</b>로 바꿔 숫자판으로 입력해요.',
       '1이 있는 자리의 자리값(… 16, 8, 4, 2, 1)을 모두 더하면 돼요.'],
     ex: '2진수 <b>1011</b> ▶ 8 + 2 + 1 = <b>11</b>',
+    bits: [4, 6, 8, 10], // 레벨별 2진수 자릿수
     gen(lv) {
-      const n = [4, 6, 8, 10][lv];
+      const n = this.bits[lv];
       const v = R(1, 2 ** n - 1);
       return { key: v, v, n, bits: toBin(v, n) };
     },
@@ -1134,15 +1157,30 @@ const STAGES = [
       <div class="ascii">${[...ALPHA].map((ch, i) => `<span><b>${ch}</b>${65 + i}</span>`).join('')}</div>`,
   },
 ];
+/* 이지 모드: 스테이지 1·2만, 2진수는 6자리(0~63)를 넘지 않음 */
+const EASY_STAGES = [
+  { ...STAGES[0], bits: [3, 4, 5, 6], th: [0, 3, 7, 12],
+    lv: ['0~7 · 카드 3장', '0~15 · 카드 4장', '0~31 · 카드 5장', '0~63 · 카드 6장'],
+    how: ['목표 숫자를 보고 <b>32 · 16 · 8 · 4 · 2 · 1</b> 카드를 눌러 전구를 켜요.',
+      '켜진 카드의 숫자를 모두 더해서 목표 숫자를 만든 다음 <b>확인</b>을 눌러요.',
+      '켜진 카드는 1, 꺼진 카드는 0! 이것이 바로 2진수예요.'],
+    ex: '목표 <b>5</b> ▶ <span class="lit">4</span> + <span class="lit">1</span> ▶ 2진수 <b>101</b>' },
+  { ...STAGES[1], bits: [3, 4, 5, 6],
+    lv: ['0~7 · 3자리', '0~15 · 4자리', '0~31 · 5자리', '0~63 · 6자리'],
+    how: ['화면에 나온 <b>2진수</b>를 <b>10진수</b>로 바꿔 숫자판으로 입력해요.',
+      '1이 있는 자리의 자리값(32, 16, 8, 4, 2, 1)을 모두 더하면 돼요.'] },
+];
+const stageList = (easy = S.easy) => (easy ? EASY_STAGES : STAGES);
 const CIRC = ['①', '②', '③', '④', '⑤', '⑥'];
 const comboBonus = (c) => (c < 3 ? 0 : Math.min(25, 5 * Math.floor(c / 3)));
 
 /* =========================================================
    화면 전환과 처음 화면
    ========================================================= */
-const S = { screen: 'menu', name: '', stage: 0, rankTab: 0 };
+const S = { screen: 'menu', name: '', stage: 0, rankTab: 0, easy: false };
 let G = null;
 let demoN = R(0, 255), demoTimer = null;
+const demoBits = () => (S.easy ? 6 : 8); // 이지 모드 데모는 전구 6개
 // 화면마다 나오는 배경음 (게임 화면은 카운트다운이 끝나면 스테이지 곡을 틂)
 const MUSIC = { menu: 'title', intro: 'title', rank: 'title', result: 'ending' };
 const stageMusic = (st) => 'lv' + (1 + Math.floor(st / 2));
@@ -1152,19 +1190,20 @@ function show(id) {
   S.screen = id;
   Sound.bgm(MUSIC[id] || null);
   clearInterval(demoTimer);
-  if (id === 'menu') demoTimer = setInterval(() => { demoN = (demoN + 1) % 256; updateDemo(); }, 800);
+  if (id === 'menu') demoTimer = setInterval(() => { demoN = (demoN + 1) % 2 ** demoBits(); updateDemo(); }, 800);
   const scr = $('#scr-' + id);
   if (scr) scr.scrollTop = 0;
 }
 const cleanName = (v) => v.replace(/\s+/g, ' ').trim().slice(0, 8);
 
 function renderDemo() {
-  $('#demo').innerHTML = `<div class="demo-bulbs">${placeVals(8).map((v) => `<div class="db">${BULB_SVG}<span>${v}</span></div>`).join('')}</div>
+  $('#demo').innerHTML = `<div class="demo-bulbs">${placeVals(demoBits()).map((v) => `<div class="db">${BULB_SVG}<span>${v}</span></div>`).join('')}</div>
     <div class="demo-out"><span class="eq">=</span><span id="demoDec" class="glow"></span><span class="sub">10진수</span></div>`;
   updateDemo();
 }
 function updateDemo() {
-  const bits = toBin(demoN, 8);
+  demoN %= 2 ** demoBits();
+  const bits = toBin(demoN, demoBits());
   $$('#demo .db').forEach((el, i) => el.classList.toggle('on', bits[i] === '1'));
   $('#demoDec').innerHTML = px(demoN);
 }
@@ -1174,11 +1213,20 @@ function renderMenu() {
   $('#nameNote').innerHTML = S.name
     ? `<b style="color:var(--g)">${esc(S.name)}</b> 님의 최고 점수가 이 기기에 저장돼요.`
     : '이름을 입력하면 스테이지별 최고 점수가 이 기기에 저장돼요.';
-  $('#stageGrid').innerHTML = STAGES.map((st, i) => {
-    const best = Store.best(S.name, i);
-    const top = Store.ranking(i)[0];
+  $$('#modeTabs [data-mode]').forEach((b) => {
+    const on = (b.dataset.mode === 'easy') === S.easy;
+    b.classList.toggle('sel', on);
+    b.setAttribute('aria-pressed', on);
+  });
+  $('#modeNote').innerHTML = S.easy
+    ? '<b>이지 모드</b> · 스테이지 1·2만 나오고, 2진수는 <b>6자리(0~63)</b>까지만 나와요. 기록은 일반 모드와 따로 저장돼요.'
+    : '일반 모드 · 스테이지 6개를 모두 할 수 있어요. 처음이라면 <b>이지 모드</b>로 연습해 봐요.';
+  $('#stageGrid').classList.toggle('easy', S.easy);
+  $('#stageGrid').innerHTML = stageList().map((st, i) => {
+    const best = Store.best(S.name, i, S.easy);
+    const top = Store.ranking(i, S.easy)[0];
     return `<button class="stile" data-stage="${i}">
-      <span class="no">스테이지 ${px(i + 1)}</span>
+      <span class="no">스테이지 ${px(i + 1)}${S.easy ? ' · 이지' : ''}</span>
       <span class="nm">${st.name}</span>
       <span class="ds">${st.desc}</span>
       <span class="bs">${S.name ? `내 최고 ${best}점` : '이름을 쓰면 기록이 남아요'}
@@ -1191,15 +1239,15 @@ function renderMenu() {
 
 function openIntro(i) {
   S.stage = i;
-  const st = STAGES[i];
-  $('#introBadge').innerHTML = `스테이지 ${px(i + 1)}`;
+  const st = stageList()[i];
+  $('#introBadge').innerHTML = `스테이지 ${px(i + 1)}${S.easy ? ' · 이지 모드' : ''}`;
   $('#introTitle').innerHTML = ko(st.name);
   $('#introHow').innerHTML = st.how.map((t) => `<p>${t}</p>`).join('');
   $('#introEx').innerHTML = st.ex;
   $('#introLevels').innerHTML = `맞힐수록 어려워져요: ${st.lv.map((l, k) => `레벨 ${k + 1} <b>${l}</b>`).join(' ▶ ')}`;
-  const top = Store.ranking(i)[0];
+  const top = Store.ranking(i, S.easy)[0];
   $('#introBest').innerHTML = S.name
-    ? `${esc(S.name)} 님의 최고 점수: ${Store.best(S.name, i)}점${top ? ` · 1위 ${esc(top.name)} ${top.score}점` : ''}`
+    ? `${esc(S.name)} 님의 최고 점수: ${Store.best(S.name, i, S.easy)}점${top ? ` · 1위 ${esc(top.name)} ${top.score}점` : ''}`
     : '<span class="warn">이름을 입력하지 않았어요. 끝난 뒤에 이름을 쓰면 기록을 저장할 수 있어요.</span>';
   show('intro');
 }
@@ -1216,14 +1264,14 @@ function cancel(t) { if (G && t) G.timers = G.timers.filter((x) => x !== t); }
 
 function startGame() {
   Sound.init();
-  G = { stage: S.stage, def: STAGES[S.stage], score: 0, combo: 0, maxCombo: 0, correct: 0, wrong: 0, hints: 0,
+  G = { stage: S.stage, easy: S.easy, def: stageList()[S.stage], score: 0, combo: 0, maxCombo: 0, correct: 0, wrong: 0, hints: 0,
     level: 0, maxLevel: 0, clock: 0, last: 0, timeLeft: LIMIT, lastSec: null, running: false, paused: false, locked: true,
     timers: [], q: null, input: '', prevKey: null, wrongLog: [], hintOn: false, hintTimer: null, saved: false, cd: null };
   show('game');
   $('#scr-game').classList.remove('paused');
   $('#pauseOv').hidden = true;
   $('#feedback').hidden = true;
-  $('#hudStage').textContent = `${CIRC[G.stage]} ${G.def.name}`;
+  $('#hudStage').textContent = `${CIRC[G.stage]} ${G.def.name}${G.easy ? ' · 이지' : ''}`;
   $('#qtitle').innerHTML = ''; $('#qbody').innerHTML = ''; $('#controls').innerHTML = ''; $('#toasts').innerHTML = '';
   $('#hintzone').innerHTML = '';
   $('#btnPause').disabled = true;
@@ -1506,7 +1554,7 @@ function endGame() {
    ========================================================= */
 function showResults() {
   let rec = null;
-  if (S.name) { rec = Store.record(S.name, G.stage, G.score); G.saved = true; }
+  if (S.name) { rec = Store.record(S.name, G.stage, G.score, G.easy); G.saved = true; }
   renderResults(rec);
   show('result');
   if (rec && rec.isNew) Sound.best();
@@ -1514,14 +1562,14 @@ function showResults() {
 function renderResults(rec) {
   const st = G.def;
   $('#resHead').innerHTML = ko('게임 결과');
-  $('#resStage').textContent = `스테이지 ${CIRC[G.stage]} ${st.name}`;
+  $('#resStage').textContent = `${G.easy ? '이지 모드 · ' : ''}스테이지 ${CIRC[G.stage]} ${st.name}`;
   $('#resScore').innerHTML = `<span class="glow">${px(G.score)}</span>`;
   $('#resNew').innerHTML = rec && rec.isNew ? '<div class="newbest">새 최고 기록!</div>' : '';
   const chip = (label, val, unit) => `<div class="chip pbox"><span>${label}</span><b>${px(val)}<small>${unit}</small></b></div>`;
   $('#resStats').innerHTML = chip('맞힌 문제', G.correct, '개') + chip('틀린 문제', G.wrong, '개') + chip('최고 콤보', G.maxCombo, '연속')
     + chip('도달 레벨', G.maxLevel + 1, '') + chip('힌트 사용', G.hints, '번');
   renderSave(rec);
-  $('#resNext').hidden = G.stage >= STAGES.length - 1;
+  $('#resNext').hidden = G.stage >= stageList(G.easy).length - 1;
   $('#resWrong').innerHTML = `<h3>오답 노트</h3>` + (G.wrongLog.length
     ? G.wrongLog.map((w, i) => `<div class="wl pbox">
         <div class="wl-q">${i + 1}. ${w.q}</div>
@@ -1533,9 +1581,9 @@ function renderResults(rec) {
 function renderSave(rec) {
   const box = $('#resSave');
   if (G.saved) {
-    const rows = Store.ranking(G.stage);
+    const rows = Store.ranking(G.stage, G.easy);
     const me = rows.find((r) => r.name === S.name);
-    const best = Store.best(S.name, G.stage);
+    const best = Store.best(S.name, G.stage, G.easy);
     box.innerHTML = `<div><b style="color:var(--g)">${esc(S.name)}</b> 님의 기록을 저장했어요.</div>
       <div class="sub">이 스테이지 내 최고 점수 ${best}점${me ? ` · <span class="rk">현재 ${me.rank}위</span> (${rows.length}명 중)` : ''}</div>`;
   } else {
@@ -1546,7 +1594,7 @@ function renderSave(rec) {
       const nm = cleanName($('#resName').value);
       if (!nm) { $('#resName').focus(); return; }
       S.name = nm; Store.d.lastName = nm;
-      const r = Store.record(nm, G.stage, G.score);
+      const r = Store.record(nm, G.stage, G.score, G.easy);
       G.saved = true;
       $('#resNew').innerHTML = r.isNew ? '<div class="newbest">새 최고 기록!</div>' : '';
       if (r.isNew) Sound.best();
@@ -1562,10 +1610,13 @@ function renderSave(rec) {
    ========================================================= */
 function renderRank() {
   $('#rankHead').innerHTML = ko('순위표');
-  $('#rankTabs').innerHTML = [...STAGES.map((st, i) => `${CIRC[i]} ${st.name}`), '합계'].map((l, i) =>
+  const list = stageList(), n = list.length;
+  if (S.rankTab > n) S.rankTab = 0;
+  $('#rankTabs').innerHTML = [...list.map((st, i) => `${CIRC[i]} ${st.name}`), '합계'].map((l, i) =>
     `<button class="tab ${i === S.rankTab ? 'sel' : ''}" data-tab="${i}">${l}</button>`).join('');
-  $('#rankTitle').textContent = S.rankTab === 6 ? '여섯 스테이지 최고 점수 합계' : `스테이지 ${CIRC[S.rankTab]} ${STAGES[S.rankTab].name}`;
-  const rows = Store.ranking(S.rankTab);
+  $('#rankTitle').textContent = (S.easy ? '이지 모드 · ' : '')
+    + (S.rankTab === n ? `${S.easy ? '두' : '여섯'} 스테이지 최고 점수 합계` : `스테이지 ${CIRC[S.rankTab]} ${list[S.rankTab].name}`);
+  const rows = Store.ranking(S.rankTab, S.easy);
   $('#rankList').innerHTML = rows.length
     ? rows.map((r) => `<li class="rr ${r.rank <= 3 ? 'r' + r.rank : ''} ${r.name === S.name ? 'me' : ''}">
         <span class="rk">${r.rank}위</span><span class="nm">${esc(r.name)}</span><span class="sc">${px(r.score)}<small>점</small></span></li>`).join('')
@@ -1611,6 +1662,16 @@ $('#stageGrid').addEventListener('click', (e) => {
   const b = e.target.closest('[data-stage]');
   if (b) { Sound.init(); Sound.select(); openIntro(Number(b.dataset.stage)); }
 });
+function setEasy(on) {
+  if (S.easy === on) return;
+  S.easy = on; S.rankTab = 0;
+  Store.d.easy = on; Store.save();
+  renderDemo(); renderMenu();
+}
+$('#modeTabs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-mode]');
+  if (b) { Sound.init(); Sound.select(); setEasy(b.dataset.mode === 'easy'); }
+});
 $('#btnRank').onclick = () => { Sound.click(); openRank(); };
 $('#btnSound').onclick = () => {
   Sound.on = !Sound.on; Store.d.sound = Sound.on; Store.save();
@@ -1655,7 +1716,7 @@ $('#controls').addEventListener('click', (e) => {
 });
 
 $('#resAgain').onclick = () => startGame();
-$('#resNext').onclick = () => openIntro(Math.min(G.stage + 1, STAGES.length - 1));
+$('#resNext').onclick = () => openIntro(Math.min(G.stage + 1, stageList(G.easy).length - 1));
 $('#resMenu').onclick = () => goMenu();
 $('#resRank').onclick = () => openRank(G.stage);
 
@@ -1696,6 +1757,9 @@ Store.load();
 S.name = cleanName(Store.d.lastName || '');
 Sound.on = Store.d.sound !== false;
 Sound.music = Store.d.music !== false;
+S.easy = Store.d.easy === true;
+const urlMode = new URLSearchParams(location.search).get('mode');
+if (urlMode === 'easy' || urlMode === 'normal') S.easy = urlMode === 'easy';
 $('#titleArt').innerHTML = ko('진수 변환 게임');
 renderDemo();
 goMenu();
